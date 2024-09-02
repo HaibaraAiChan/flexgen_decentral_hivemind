@@ -111,6 +111,8 @@ class RemoteSequenceManager:
                 startup_timeout=config.daemon_startup_timeout,
                 start=True,
             )
+        print('client manager dht', dht)
+        print('DHT ', DHT)
         assert isinstance(dht, DHT) and dht.is_alive(), "`dht` must be a running hivemind.DHT instance"
         self.dht = dht
 

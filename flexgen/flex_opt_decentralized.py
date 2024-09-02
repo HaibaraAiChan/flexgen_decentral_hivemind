@@ -5,6 +5,7 @@ from itertools import chain
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import hivemind
+from hivemind import DHT, get_dht_time
 import torch
 from hivemind import BatchTensorDescriptor, TensorDescriptor
 from hivemind.moe.expert_uid import ExpertUID
@@ -126,6 +127,8 @@ class DecOptLM(DistOptLM):
         x = self.hidden[t][i][j][k]
         val = x.pop().move(self.comm_device)
         receiver_rank = (self.pipeline_rank + 1) % self.num_pipeline_stages
+        # future = self.dht.store((t,i,j,k), msgpack.packb(val.data.numpy(), default=m.encode), expiration_time=1)
+        # return future
         # if async_:
         #     future = dist.isend(val.data, receiver_rank, tag=tag)
         #     return future
@@ -135,9 +138,9 @@ class DecOptLM(DistOptLM):
         # Share your model and optimizer on the DHT
         # self.dht.store('model', val.data, tags=['model'], expiration_time=1) # expiration_time
         print(val.data)
-        print(type(val.data))
-        future = self.dht.store((t,i,j,k), msgpack.packb(val.data.numpy(), default=m.encode), expiration_time=1)
-
+        print('type of val.data',type(val.data))
+        future = self.dht.store((t,i,j,k), msgpack.packb(val.data.numpy(), default=m.encode), expiration_time=get_dht_time()+600)
+        print('future', future)
         return future
 
     def recv_hidden(self, t, i, j, k, tag=0, async_=False):

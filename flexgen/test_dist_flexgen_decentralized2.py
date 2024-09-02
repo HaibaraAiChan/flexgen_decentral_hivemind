@@ -39,15 +39,17 @@ UID_DELIMITER = "."
 #     "/ip4/129.114.108.6/tcp/40375/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK",
 #     "/ip4/129.114.108.6/udp/48446/quic/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK"
 # ]
-INITIAL_PEERS = [
-    "/ip4/127.0.0.1/tcp/40375/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK",
-    "/ip4/127.0.0.1/udp/48446/quic/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK"
-]
+# INITIAL_PEERS = [
+#     "/ip4/127.0.0.1/tcp/40375/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK",
+#     "/ip4/127.0.0.1/udp/48446/quic/p2p/12D3KooWGsKNbbFiu8nyyU9Zb2xe8nwn8AzNggWfnyAtr3PPZ4pK"
+# ]
 dht = hivemind.DHT(host_maddrs=["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic"],
                    start=True) # node 1
-dht = hivemind.DHT(host_maddrs=["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic"],
-                   initial_peers=INITIAL_PEERS, 
-                   start=True)   # node 2
+print(type(dht), dht.is_alive())
+print('main function dht', dht)
+# dht = hivemind.DHT(host_maddrs=["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic"],
+#                    initial_peers=INITIAL_PEERS, 
+#                    start=True)   # node 2
 
 def main(args):
     # Prompts
@@ -112,10 +114,10 @@ def main(args):
     disk = TorchDisk(args.offload_dir, None, args.local_rank)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
     TorchTensor.name_count = count(start=args.rank, step=2)
-    model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
-                      2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=INITIAL_PEERS)
     # model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
-                    #   2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht)
+    #                   2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=INITIAL_PEERS) # node 2
+    model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
+                      2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht) # node 1
 
 
     # Generate
@@ -151,7 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--offload-dir", type=str, default="~/flexgen_offload_dir",
         help="The directory to offload tensors. ")
     parser.add_argument("--percent", nargs="+", type=int,
-        default=[100, 0, 100, 0, 100, 0],
+        default=[0, 100, 0, 100, 0, 100],
         help="Six numbers. They are "
          "the percentage of weight on GPU, "
          "the percentage of weight on CPU, "

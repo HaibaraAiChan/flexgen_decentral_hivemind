@@ -316,12 +316,12 @@ class DistOptLM(OptLM):
         num_prompts = len(task.inputs)
         num_inner_iterations = self.num_inner_iterations
 
-        # # print("Stop is ")
-        # # print(stop)
-        # # assert stop is None, "Not implemented."
-        # print("num prompts is %d\n"%num_prompts)
-        # print("num gpu batch is %d\n"%gpu_batch_size)
-        # print("num batch is %d\n"%num_gpu_batches)
+        print("Stop is ")
+        print(stop)
+        # assert stop is None, "Not implemented."
+        print("num prompts is %d\n"%num_prompts)
+        print("num gpu batch is %d\n"%gpu_batch_size)
+        print("num batch is %d\n"%num_gpu_batches)
 
         assert num_prompts % (gpu_batch_size * num_gpu_batches) == 0
         num_pipeline_batches = num_prompts // (gpu_batch_size * num_gpu_batches)
