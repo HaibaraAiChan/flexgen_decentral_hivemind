@@ -152,6 +152,8 @@ if __name__ == "__main__":
              "FlexGen will automatically download them from HuggingFace.")
     parser.add_argument("--offload-dir", type=str, default="~/flexgen_offload_dir",
         help="The directory to offload tensors. ")
+    parser.add_argument('--use-mpi', action='store_true', default=False,
+                        help="Get distributed info from MPI")
     parser.add_argument("--percent", nargs="+", type=int,
         default=[0, 100, 0, 100, 0, 100],
         help="Six numbers. They are "

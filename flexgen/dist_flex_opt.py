@@ -327,8 +327,8 @@ class DistOptLM(OptLM):
         num_pipeline_batches = num_prompts // (gpu_batch_size * num_gpu_batches)
         self.num_pipeline_batches = num_pipeline_batches
 
-        # print("num pipline is %d\n"%num_pipeline_batches)
-        # print("num inner is %d\n"%num_inner_iterations)
+        print("num pipline is %d\n"%num_pipeline_batches)
+        print("num inner is %d\n"%num_inner_iterations)
 
         assert num_pipeline_batches % num_inner_iterations == 0
         prompt_len, gen_len = task.prompt_len, task.gen_len
@@ -545,12 +545,18 @@ def comm_test(comm_device):
     a = torch.ones(1).to(comm_device)
     dist.all_reduce(a)
     assert a.item() == args.world_size
-
+    
+def comm_test_dist(comm_device, world_size):
+    # A small all_reduce for warmup.
+    a = torch.ones(1).to(comm_device)
+    dist.all_reduce(a)
+    assert a.item() == world_size
 
 def run_flexgen_dist(args):
-    t_name = args.model.replace("175b", "66b")
+    t_name = args.model.replace("175b", "125m")
     tokenizer = AutoTokenizer.from_pretrained(t_name, padding_side="left")
     num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
+    num_inner_iterations = 1
     num_prompts = args.num_gpu_batches * args.gpu_batch_size * num_inner_iterations * 1
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
@@ -679,8 +685,9 @@ if __name__ == "__main__":
     add_parser_arguments(parser)
     add_distributed_parser_arguments(parser)
     args = parser.parse_args()
-
+    print('args.head_ip is not None and args.port is not None ', args.head_ip is not None and args.port is not None)
     if args.head_ip is not None and args.port is not None:
+        print('args.use_mpi', args.use_mpi)
         if args.use_mpi:
             args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE'))
             args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK'))

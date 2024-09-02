@@ -4,7 +4,7 @@ import pytest
 
 from flexgen.dist_flex_opt import *
 from transformers import AutoTokenizer
-
+import os
 
 def main(args):
     # Prompts
@@ -25,12 +25,6 @@ def main(args):
     env = ExecutionEnv.create(args.offload_dir)
 
     # from dist_flex_opt.py
-    num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
-    num_prompts = args.num_gpu_batches * args.gpu_batch_size * num_inner_iterations * 1
-    prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
-
-    warmup_inputs = get_test_inputs(32, num_prompts, tokenizer)
-    inputs = get_test_inputs(prompt_len, num_prompts, tokenizer)
 
     gpu = TorchDevice(f"cuda:{args.local_rank}")
     cpu = TorchDevice("cpu")
@@ -38,7 +32,7 @@ def main(args):
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
     TorchTensor.name_count = count(start=args.rank, step=args.world_size)
 
-    comm_test(gpu.dev if args.comm_device == "gpu" else cpu.dev)
+    comm_test_dist(gpu.dev if args.comm_device == "gpu" else cpu.dev, args.world_size)
 
     # Offloading policy
     policy = Policy(len(prompts), 1,
@@ -61,12 +55,21 @@ def main(args):
     tokenizer = AutoTokenizer.from_pretrained("facebook/opt-1.3b", padding_side="left")
     tokenizer.add_bos_token = False
     stop = tokenizer("\n").input_ids[0]
-
+    num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
+    
     # model = DistOptLM(args.model, env, args.path, policy)
     opt_config = get_opt_config(args.model)
     model = DistOptLM(opt_config, env, args.path, policy, args.rank,
                       args.world_size, args.comm_device, num_inner_iterations=num_inner_iterations,
                       async_comm=args.async_comm)
+    args.num_gpu_batches = policy.num_gpu_batches
+    args.gpu_batch_size = policy.gpu_batch_size
+    num_prompts = args.num_gpu_batches * args.gpu_batch_size * num_inner_iterations * 1
+    prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
+
+    warmup_inputs = get_test_inputs(32, num_prompts, tokenizer)
+    inputs = get_test_inputs(prompt_len, num_prompts, tokenizer)
+
     cache_size = opt_config.cache_bytes(num_prompts, prompt_len + gen_len)
     hidden_size = opt_config.hidden_bytes(num_prompts, prompt_len + gen_len)
     print(f"model size: {opt_config.model_bytes()/GB:.3f} GB, "
@@ -103,6 +106,12 @@ if __name__ == "__main__":
              "FlexGen will automatically download them from HuggingFace.")
     parser.add_argument("--offload-dir", type=str, default="~/flexgen_offload_dir",
         help="The directory to offload tensors. ")
+    parser.add_argument('--head-ip', type=str, default=None, help='the IP address of the head node')
+    parser.add_argument('--port', type=int, default=None, help='the port of the head node')
+    parser.add_argument("--prompt-len", type=int, default=5)
+    parser.add_argument("--cut-gen-len", type=int,
+        help="Cut generation length for fast debugging.")
+    parser.add_argument("--gen-len", type=int, default=32)
     parser.add_argument("--percent", nargs="+", type=int,
         default=[10, 90, 10, 90, 10, 90],
         help="Six numbers. They are "
@@ -114,12 +123,37 @@ if __name__ == "__main__":
          "the percentage of activations on CPU")
     parser.add_argument("--pin-weight", type=str2bool, nargs="?",
         const=True, default=True)
+    parser.add_argument('--use-mpi', action='store_true', default=True,
+                        help="Get distributed info from MPI")
     parser.add_argument("--cpu-cache-compute", action="store_true")
     parser.add_argument("--compress-weight", action="store_true",
         help="Whether to compress weight.")
     parser.add_argument("--compress-cache", action="store_true",
         help="Whether to compress cache.")
+    parser.add_argument('--comm-device', type=str, default='cpu',
+                        choices=['gpu', 'cpu'],
+                        help='communication through gpu nvlink or cpu memory '
+                             'and socket')
+    # parser.add_argument("--comm-device", type=str, default="cpu")
+    parser.add_argument('--async-comm', action='store_true', default=False,
+                        help="Use asynchronous communication")
+    parser.add_argument('--num-inner-iterations', metavar='I', type=int, default=None)
     args = parser.parse_args()
+    num_gpus = torch.cuda.device_count()
+    print('num_gpus ', num_gpus)
+    if num_gpus>1 : 
+        if args.use_mpi:
+            args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE'))
+            args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK'))
+            args.local_rank = int(os.getenv('OMPI_COMM_WORLD_LOCAL_RANK'))
+        initialize_distributed(args.head_ip, args.port, args.world_size,
+                                args.rank, args.local_rank, args.comm_device)
+    else:
+        
+        args.world_size = 1
+        args.rank = 0
+        args.local_rank = 0
+    
 
     assert len(args.percent) == 6
 
