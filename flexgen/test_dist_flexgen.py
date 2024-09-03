@@ -56,7 +56,7 @@ def main(args):
     tokenizer.add_bos_token = False
     stop = tokenizer("\n").input_ids[0]
     num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
-    
+    num_inner_iterations=1
     # model = DistOptLM(args.model, env, args.path, policy)
     opt_config = get_opt_config(args.model)
     model = DistOptLM(opt_config, env, args.path, policy, args.rank,
@@ -99,45 +99,51 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="facebook/opt-1.3b",
-        help="The model name.")
-    parser.add_argument("--path", type=str, default="~/opt_weights",
-        help="The path to the model weights. If there are no cached weights, "
-             "FlexGen will automatically download them from HuggingFace.")
-    parser.add_argument("--offload-dir", type=str, default="~/flexgen_offload_dir",
-        help="The directory to offload tensors. ")
-    parser.add_argument('--head-ip', type=str, default=None, help='the IP address of the head node')
-    parser.add_argument('--port', type=int, default=None, help='the port of the head node')
-    parser.add_argument("--prompt-len", type=int, default=5)
-    parser.add_argument("--cut-gen-len", type=int,
-        help="Cut generation length for fast debugging.")
-    parser.add_argument("--gen-len", type=int, default=32)
-    parser.add_argument("--percent", nargs="+", type=int,
-        default=[10, 90, 10, 90, 10, 90],
-        help="Six numbers. They are "
-         "the percentage of weight on GPU, "
-         "the percentage of weight on CPU, "
-         "the percentage of attention cache on GPU, "
-         "the percentage of attention cache on CPU, "
-         "the percentage of activations on GPU, "
-         "the percentage of activations on CPU")
-    parser.add_argument("--pin-weight", type=str2bool, nargs="?",
-        const=True, default=True)
-    parser.add_argument('--use-mpi', action='store_true', default=True,
-                        help="Get distributed info from MPI")
-    parser.add_argument("--cpu-cache-compute", action="store_true")
-    parser.add_argument("--compress-weight", action="store_true",
-        help="Whether to compress weight.")
-    parser.add_argument("--compress-cache", action="store_true",
-        help="Whether to compress cache.")
-    parser.add_argument('--comm-device', type=str, default='cpu',
-                        choices=['gpu', 'cpu'],
-                        help='communication through gpu nvlink or cpu memory '
-                             'and socket')
-    # parser.add_argument("--comm-device", type=str, default="cpu")
-    parser.add_argument('--async-comm', action='store_true', default=False,
-                        help="Use asynchronous communication")
-    parser.add_argument('--num-inner-iterations', metavar='I', type=int, default=None)
+    add_parser_arguments(parser)
+    add_distributed_parser_arguments(parser)
+    args = parser.parse_args()
+    # parser.add_argument("--model", type=str, default="facebook/opt-1.3b",
+    #     help="The model name.")
+    # parser.add_argument("--path", type=str, default="~/opt_weights",
+    #     help="The path to the model weights. If there are no cached weights, "
+    #          "FlexGen will automatically download them from HuggingFace.")
+    # parser.add_argument("--offload-dir", type=str, default="~/flexgen_offload_dir",
+    #     help="The directory to offload tensors. ")
+    # parser.add_argument('--head-ip', type=str, default=None, help='the IP address of the head node')
+    # parser.add_argument('--port', type=int, default=None, help='the port of the head node')
+    # parser.add_argument('--rank', metavar='I', type=int, default=None)
+    # parser.add_argument('--local-rank', metavar='I', type=int, default=None)
+    # parser.add_argument('--world-size', metavar='N', type=int, default=None)
+    # # parser.add_argument("--prompt-len", type=int, default=512)
+    # parser.add_argument("--cut-gen-len", type=int,
+    #     help="Cut generation length for fast debugging.")
+    # parser.add_argument("--gen-len", type=int, default=32)
+    # parser.add_argument("--percent", nargs="+", type=int,
+    #     default=[100, 0, 100, 0, 100, 0],
+    #     help="Six numbers. They are "
+    #      "the percentage of weight on GPU, "
+    #      "the percentage of weight on CPU, "
+    #      "the percentage of attention cache on GPU, "
+    #      "the percentage of attention cache on CPU, "
+    #      "the percentage of activations on GPU, "
+    #      "the percentage of activations on CPU")
+    # parser.add_argument("--pin-weight", type=str2bool, nargs="?",
+    #     const=True, default=True)
+    # parser.add_argument('--use-mpi', action='store_true', default=True,
+    #                     help="Get distributed info from MPI")
+    # parser.add_argument("--cpu-cache-compute", action="store_true")
+    # parser.add_argument("--compress-weight", action="store_true",
+    #     help="Whether to compress weight.")
+    # parser.add_argument("--compress-cache", action="store_true",
+    #     help="Whether to compress cache.")
+    # parser.add_argument('--comm-device', type=str, default='cpu',
+    #                     choices=['gpu', 'cpu'],
+    #                     help='communication through gpu nvlink or cpu memory '
+    #                          'and socket')
+    # # parser.add_argument("--comm-device", type=str, default="cpu")
+    # parser.add_argument('--async-comm', action='store_true', default=False,
+    #                     help="Use asynchronous communication")
+    # parser.add_argument('--num-inner-iterations', metavar='I', type=int, default=None)
     args = parser.parse_args()
     num_gpus = torch.cuda.device_count()
     print('num_gpus ', num_gpus)
@@ -157,4 +163,10 @@ if __name__ == "__main__":
 
     assert len(args.percent) == 6
 
-    main(args)
+    
+    try:
+        run_flexgen_dist(args)
+    except Exception as e:
+        print(str(e))
+        traceback.print_exc()
+        raise e
