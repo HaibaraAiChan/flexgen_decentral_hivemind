@@ -480,12 +480,14 @@ class DistOptLM(OptLM):
                 for t in range(self.num_inner_iterations):
                     timer_name = "generate-prompt" if i == 0 else "generate"
                     timers(timer_name).start()
+                    
                     self.update_attention_mask(b, t, i, 0)
 
                     if self.num_pipeline_stages > 1:
                         self.send_recv_hidden(last_sending_job, (t, i))
 
                     for j in range(self.num_layers):
+                        print('b, i, t, j = '+ str(b)+' '+str(i)+' '+str(t)+' '+str(j))
                         self.load_weight(b, t, i, j+1, 0)
                         self.load_cache(t, i, j+1, 0)
                         self.load_hidden(b, t, i, j, 0)
@@ -495,12 +497,13 @@ class DistOptLM(OptLM):
                         self.sync()
 
                     last_sending_job = (t, i)
-
+                    print('end of all layers')
                     timers(timer_name).stop()
 
         if self.num_pipeline_stages > 1:
             self.send_recv_hidden(last_sending_job, None)
             dist.barrier()
+        print('finish generation_loop_overlap_one_batch')
 
     def generation_loop_overlap_multi_batch(self):
         self.sending_tag = 0
@@ -556,7 +559,7 @@ def run_flexgen_dist(args):
     t_name = args.model.replace("175b", "125m")
     tokenizer = AutoTokenizer.from_pretrained(t_name, padding_side="left")
     num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
-    num_inner_iterations = 1
+    # num_inner_iterations = 1
     num_prompts = args.num_gpu_batches * args.gpu_batch_size * num_inner_iterations * 1
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
