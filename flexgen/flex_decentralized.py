@@ -25,13 +25,13 @@ import msgpack
 import msgpack_numpy as m
 from flexgen.timer import timers
 
-class DecOptLM(DistOptLM):
+class DecLM(DistOptLM):
     """ Decentralized Opt LM model """
     def __init__(self, config, env, path, policy, 
-                 pipeline_rank, num_pipeline_stages, 
+                 device_rank, num_blocks, 
                  comm_device, num_inner_iterations=None, async_comm=False, dht: Optional[hivemind.DHT] = None):
         super().__init__(config, env, path, policy, 
-                         pipeline_rank, num_pipeline_stages, 
+                         device_rank, num_blocks, 
                          comm_device, num_inner_iterations, async_comm)
         
         self.config = config
@@ -39,8 +39,8 @@ class DecOptLM(DistOptLM):
         self.path = path
         self.policy = policy
         self.num_gpu_batches = self.policy.num_gpu_batches
-        self.pipeline_rank = pipeline_rank
-        self.num_pipeline_stages = num_pipeline_stages
+        self.device_rank = device_rank # server idx
+        self.num_blocks = num_blocks
         self.num_inner_iterations = num_inner_iterations if num_inner_iterations is not None else num_pipeline_stages
         self.async_comm = async_comm
         if comm_device == "cpu":
@@ -51,21 +51,21 @@ class DecOptLM(DistOptLM):
             raise ValueError(f"Invalid comm_device: {comm_device}")
 
         layers = []
-        if pipeline_rank == 0:
+        if device_rank == 0:
             layers.append(InputEmbed(self.config, self.env, self.policy))
-        pipeline_stage_sizes = [config.num_hidden_layers // num_pipeline_stages
-                                + int(i < config.num_hidden_layers % num_pipeline_stages)
-                                for i in range(num_pipeline_stages)]
+        block_sizes = [config.num_hidden_layers // num_blocks
+                                + int(i < config.num_hidden_layers % num_blocks)
+                                for i in range(num_blocks)]
         layer_start_ids = [0]
-        for stage_size in pipeline_stage_sizes:
-            layer_start_ids.append(layer_start_ids[-1] + stage_size)
-        for i in range(layer_start_ids[pipeline_rank], layer_start_ids[pipeline_rank + 1]):
+        for block_size in block_sizes:
+            layer_start_ids.append(layer_start_ids[-1] + block_size)
+        for i in range(layer_start_ids[device_rank], layer_start_ids[device_rank + 1]):
             if self.policy.sep_layer:
                 layers.append(SelfAttention(self.config, self.env, self.policy, i))
                 layers.append(MLP(self.config, self.env, self.policy, i))
             else:
                 layers.append(TransformerLayer(self.config, self.env, self.policy, i))
-        if pipeline_rank == num_pipeline_stages - 1:
+        if device_rank == num_blocks - 1:
             layers.append(OutputEmbed(self.config, self.env, self.policy))
         self.layers = layers
         self.num_layers = len(layers)
@@ -126,7 +126,7 @@ class DecOptLM(DistOptLM):
         # Suppose we need to send tensors on GPUs
         x = self.hidden[t][i][j][k]
         val = x.pop().move(self.comm_device)
-        receiver_rank = (self.pipeline_rank + 1) % self.num_pipeline_stages
+        receiver_rank = (self.device_rank + 1) % self.num_blocks
         # future = self.dht.store((t,i,j,k), msgpack.packb(val.data.numpy(), default=m.encode), expiration_time=1)
         # return future
         # if async_:
@@ -148,7 +148,7 @@ class DecOptLM(DistOptLM):
         return future
 
     def recv_hidden(self, t, i, j, k, tag=0, async_=False):
-        sender_rank = (self.pipeline_rank - 1) % self.num_pipeline_stages
+        sender_rank = (self.device_rank - 1) % self.num_blocks
         val_holder = self.hidden[t][i][j][k]
         seq_len = self.task.prompt_len if i == 0 else 1
         shape, dtype = self.layers[j].input_act_shape_and_dtype(

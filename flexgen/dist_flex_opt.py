@@ -264,6 +264,13 @@ class DistOptLM(OptLM):
         # Clear the weight_read_buf if it is the last gpu batch
         # Clear the cache_read_buf
         # Run layer computation
+        # print('compute_layer: self.hidden[t][i][j][k] ', self.hidden[t][i][j][k].val) # TorchTensor(12,512,768),dtype=torch.float16, device=cuda:0)
+        # print('compute_layer: self.cache_read_buf[t][j][k] ', self.cache_read_buf[t][j][k].val) # none
+        # print('compute_layer: self.weight_read_buf[j] ', self.weight_read_buf[j].val) # ((<flexgen.pytorch_backend.TorchTensor object at 0x7f9cf8b36160>, False), (<flexgen.pytorch_backend.TorchTensor object at 0x7f9dc8fdfd90>, False), (<flexgen.pytorch_backend.TorchTensor object at 0x7f9dc8fdf700>, False), (<flexgen.pytorch_backend.TorchTensor object at 0x7f9dc8fdf970>, False), (<flexgen.pytorch_backend.TorchTensor object at 0x7f9dc8f1b280>, False), (<flexgen.pytorch_backend.TorchTensor object at 0x7f9dc8f1b670>, False))
+        # print('compute_layer: self.attention_mask[t][k] ', self.attention_mask[t][k].val) # TorchTensor(shape=torch.Size([12, 512]), dtype=torch.bool, device=cuda:0)
+        # print('compute_layer: self.cache_write_buf[t][j][k] ', self.cache_write_buf[t][j][k].val) # none
+        # print('compute_layer: self.weight_read_buf[j] ', list(list(self.weight_read_buf[j].val)[0])[0].device)
+        print('compute_layer: self.weight_read_buf[j] ', list(list(self.weight_read_buf[j].val)[0])[0].shape)
         self.layers[j].forward(self.hidden[t][i][j][k], self.cache_read_buf[t][j][k],
             self.weight_read_buf[j], self.attention_mask[t][k],
             self.cache_write_buf[t][j][k], i, k)
@@ -313,11 +320,15 @@ class DistOptLM(OptLM):
         num_gpu_batches = self.num_gpu_batches
         gpu_batch_size = self.policy.gpu_batch_size
         overlap = self.policy.overlap
+        # print('task.inputs ', task.inputs)
+        
         num_prompts = len(task.inputs)
+        print('length of task.inputs[0] ', len(list(task.inputs[0])))
+        print('generate () num_prompts ', num_prompts)
         num_inner_iterations = self.num_inner_iterations
 
-        print("Stop is ")
-        print(stop)
+        print("Stop \\n is ", stop)
+        # print(stop)
         # assert stop is None, "Not implemented."
         print("num prompts is %d\n"%num_prompts)
         print("num gpu batch is %d\n"%gpu_batch_size)
@@ -701,7 +712,8 @@ if __name__ == "__main__":
         args.world_size = 1
         args.rank = 0
         args.local_rank = 0
-
+        initialize_distributed(args.head_ip, args.port, args.world_size,
+                               args.rank, args.local_rank, args.comm_device)
     assert len(args.percent) == 6
 
     try:

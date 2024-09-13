@@ -4,9 +4,11 @@ from typing import Optional, Sequence, Union
 from hivemind import PeerID
 
 # from petals.constants import PUBLIC_INITIAL_PEERS
+# PUBLIC_INITIAL_PEERS = ["/ip4/172.31.26.141/tcp/32977/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS", 
+#                         "/ip4/172.31.26.141/udp/54124/quic/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS"]
+# from petals.constants import PUBLIC_INITIAL_PEERS
 PUBLIC_INITIAL_PEERS = ["/ip4/172.31.26.141/tcp/32977/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS", 
                         "/ip4/172.31.26.141/udp/54124/quic/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS"]
-
 @dataclasses.dataclass
 class ClientConfig:
     initial_peers: Sequence[str] = tuple(PUBLIC_INITIAL_PEERS)  # a list of initial peers for hivemind DHT

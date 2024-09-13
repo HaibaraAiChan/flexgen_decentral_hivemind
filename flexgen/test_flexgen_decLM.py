@@ -4,7 +4,7 @@ import argparse
 import hivemind
 
 from flexgen.dist_flex_opt import *
-from flexgen.flex_opt_decentralized import *
+from flexgen.flex_decentralized import *
 from flexgen.opt_config import get_opt_config
 from transformers import AutoTokenizer
 
@@ -111,8 +111,8 @@ def main(args):
     TorchTensor.name_count = count(start=args.rank, step=2)
     # model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
     #                   2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=INITIAL_PEERS) # node 2
-    model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
-                      2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht) # node 1
+    model = DecLM(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
+                      num_blocks=2, comm_device=args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht) # node 1
 
     cache_size = opt_config.cache_bytes(num_prompts, prompt_len + gen_len)
     hidden_size = opt_config.hidden_bytes(num_prompts, prompt_len + gen_len)
