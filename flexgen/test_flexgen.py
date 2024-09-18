@@ -1,36 +1,18 @@
 """Complete sentences with FlexGen and OPT models."""
 import argparse
 # import pytest
+from itertools import count
 import hivemind
-
-from flexgen.dist_flex_opt import *
-from flexgen.flex_decentralized import *
+from flexgen.flex_opt import *
+from flexgen.pytorch_backend import (TorchDevice, TorchDisk, TorchLink,
+    TorchMixedDevice, TorchTensor)
 from flexgen.opt_config import get_opt_config
 from transformers import AutoTokenizer
 
 import torch
 print(torch.cuda.is_available())
-UID_DELIMITER = "."
-# INITIAL_PEERS = [
-#     # IPv4 DNS addresses
-#     "/ec2-54-177-237-94.us-west-1.compute.amazonaws.com",
-#     "/ec2-52-53-152-100.us-west-1.compute.amazonaws.com",
-#     # Reserved IPs
-#     "/ip4/54.177.237.94/",
-#     "/ip4/52.53.152.100/"]
-
-# INITIAL_PEERS = ["/ip4/172.31.11.38/tcp/38461/p2p/12D3KooWN3VnDVjnn255X62XPTGYmF6rLUq7x9uHnbGPhH3y91iU", 
-#                 "/ip4/172.31.11.38/udp/55744/quic/p2p/12D3KooWN3VnDVjnn255X62XPTGYmF6rLUq7x9uHnbGPhH3y91iU"]
 
 
-dht = hivemind.DHT(host_maddrs=["/ip4/0.0.0.0/tcp/38461", "/ip4/0.0.0.0/udp/55744/quic"],
-                   start=True) # node 1
-print('\n'.join(str(addr) for addr in dht.get_visible_maddrs()))
-print(type(dht), dht.is_alive())
-print('main function dht', dht)
-# dht = hivemind.DHT(host_maddrs=["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic"],
-#                    initial_peers=INITIAL_PEERS, 
-#                    start=True)   # node 2
 
 def main(args):
     # Prompts
@@ -49,7 +31,7 @@ def main(args):
     
     # Model
     print("Initialize...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, padding_side="left")
+    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m", padding_side="left")
     # print('tokenizer', tokenizer)
     tokenizer.add_bos_token = False # there will not be added the "beginning of sequence token"
     # print('after add_bos_token : tokenizer', tokenizer) # 
@@ -60,8 +42,8 @@ def main(args):
     # such as in model inputs or for controlling the flow of text generation.
     # print("Stop is %d\n "%stop)
     
-    num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
-    # num_inner_iterations = args.num_inner_iterations
+    # num_inner_iterations = args.num_inner_iterations if args.num_inner_iterations is not None else args.world_size
+    num_inner_iterations = 1
     print('args ', args)
     print('args.num_gpu_batches ', args.num_gpu_batches)
     print('args.gpu_batch_size ', args.gpu_batch_size)
@@ -81,12 +63,10 @@ def main(args):
     disk = TorchDisk(args.offload_dir, None, args.local_rank)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
     TorchTensor.name_count = count(start=args.rank, step=args.world_size)
-    # comm_test_dist(gpu.dev if args.comm_device == "gpu" else cpu.dev, args.world_size)
+
     assert not (args.compress_cache and args.attn_sparsity < 1.0), "Not implemented"
 
     opt_config = get_opt_config(args.model)
-    print('model name ', args.model)
-    
     # Initialize environment
     # env = ExecutionEnv.create(args.offload_dir)
 
@@ -110,12 +90,9 @@ def main(args):
     disk = TorchDisk(args.offload_dir, None, args.local_rank)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
     TorchTensor.name_count = count(start=args.rank, step=2)
-    # model = DecOptLM(get_opt_config(args.model), env, args.path, policy, args.rank,
-    #                   2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=INITIAL_PEERS) # node 2
-    # model = DecLM(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
-    #                   num_blocks=2, comm_device=args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht) # node 1
-    model = DecLM(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
-                      num_blocks=args.num_blocks,  dht=dht) # node 1
+
+    model = OptLM(opt_config, env, args.path, policy)
+
 
     cache_size = opt_config.cache_bytes(num_prompts, prompt_len + gen_len)
     hidden_size = opt_config.hidden_bytes(num_prompts, prompt_len + gen_len)
@@ -146,7 +123,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_parser_arguments(parser)
-    # add_distributed_parser_arguments(parser)
+
     args = parser.parse_args()
     
     args.world_size = 1
@@ -159,26 +136,9 @@ if __name__ == "__main__":
     args.gpu_batch_size=12
     args.comm_device = 'cpu' 
     args.sep_layer=False
-    args.num_inner_iterations = 1
-    args.num_blocks=1
-    # args.use_mpi=True
-    # initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                         args.rank, args.local_rank, args.comm_device)
     # num_gpus = torch.cuda.device_count()
     # print('num_gpus ', num_gpus)
-    # if num_gpus>1 : 
-    #     if args.use_mpi:
-    #         args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE'))
-    #         args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK'))
-    #         args.local_rank = int(os.getenv('OMPI_COMM_WORLD_LOCAL_RANK'))
-    #     initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                             args.rank, args.local_rank, args.comm_device)
-    # else:
-    #     args.world_size = 1
-    #     args.rank = 0
-    #     args.local_rank = 0
-    #     initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                            args.rank, args.local_rank, args.comm_device)
+   
     assert len(args.percent) == 6
     
     try:

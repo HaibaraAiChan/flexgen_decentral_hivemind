@@ -765,11 +765,14 @@ class OptLM:
 
         # Store to hidden states buffers
         if j == self.num_layers - 1:  # store to output
+            print('self.num_layers ', self.num_layers)
             gpu_batch_size = self.policy.gpu_batch_size
             left, right = k * gpu_batch_size, (k + 1) * gpu_batch_size
             ids = self.hidden[i][j][k].pop().data.detach().cpu().numpy()
             pos = self.task.prompt_len + i
             if self.task.stop:
+                print('self.task.stop ', self.task.stop)
+                print()
                 stopped = self.stopped[left:right]
                 self.output_ids[left:right, pos:pos+1] = np.where(
                     stopped, self.config.pad_token_id, ids)
@@ -1018,7 +1021,9 @@ class OptLM:
         for i in range(self.execute_gen_len):
             timers("generate").start()
             self.update_attention_mask(i, 0)
+            print('-=-=-=-=--=--=-=-=---==-=-self.num_layers ', self.num_layers)
             for j in range(self.num_layers):
+                print(' i, j = '+' '+str(i)+' '+str(j))
                 self.load_weight(i, j+1, 0)
                 self.load_cache(i, j+1, 0)
                 self.load_hidden(i, j, 0)
@@ -1273,7 +1278,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
+    parser.add_argument("--model", type=str, default="facebook/opt-125m",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -1297,8 +1302,10 @@ def add_parser_arguments(parser):
          "the percentage of attention cache on CPU, "
          "the percentage of activations on GPU, "
          "the percentage of activations on CPU")
+    # parser.add_argument("--sep-layer", type=str2bool, nargs='?',
+    #     const=True, default=True)
     parser.add_argument("--sep-layer", type=str2bool, nargs='?',
-        const=True, default=True)
+        const=True, default=False)
     parser.add_argument("--pin-weight", type=str2bool, nargs="?",
         const=True, default=True)
     parser.add_argument("--cpu-cache-compute", action="store_true")
