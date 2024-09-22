@@ -463,6 +463,7 @@ class ModuleContainer(threading.Thread):
         **kwargs,
     ) -> ModuleContainer:
         module_uids = [f"{dht_prefix}{UID_DELIMITER}{block_index}" for block_index in block_indices]
+        print('module_uids ', module_uids)
         memory_cache = MemoryCache(attn_cache_bytes, max_alloc_timeout)
 
         server_info.state = ServerState.JOINING
@@ -532,7 +533,7 @@ class ModuleContainer(threading.Thread):
 
             merge_inference_pools_inplace(blocks)
 
-            if should_validate_reachability:
+            if should_validate_reachability: # check the reachability of DHT
                 validate_reachability(dht.peer_id)
         except:
             logger.debug("Shutting down backends")

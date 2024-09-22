@@ -29,7 +29,7 @@ import msgpack
 import msgpack_numpy as m
 from flexgen.timer import timers
 
-class DecBlock(OptLM):
+class DecLM(OptLM):
     """ Decentralized LM model with assigned layers"""
     def __init__(self, config, env, path, policy, device_rank, block_idx, dht):
         super().__init__(config, env, path, policy)
@@ -43,17 +43,18 @@ class DecBlock(OptLM):
 
         
         layers = []
-        # if device_rank == 0: # input layer is located in the client node
-        #     layers.append(InputEmbed(self.config, self.env, self.policy))
+        if device_rank == 0:
+            layers.append(InputEmbed(self.config, self.env, self.policy))
         
+        num_blocks = len(block_idx) # transformer layers
         layer_start_ids = [block_idx[0], block_idx[-1]]  # Ensure there are at least two elements  
 
         print('layer_start_ids ', layer_start_ids)
         for i in range(layer_start_ids[device_rank], layer_start_ids[device_rank + 1]):
                 layers.append(TransformerLayer(self.config, self.env, self.policy, i))
-        if device_rank == 1: # demo, we only have 2 servers
+        if device_rank == 0: # demo, we only have 2 servers
             layers.append(OutputEmbed(self.config, self.env, self.policy))
-        self.layers = layers # layers in the current server 
+        self.layers = layers # layers in the current block 
         self.num_layers = len(layers)
 
         if self.policy.act_gpu_percent == 100:
@@ -73,9 +74,8 @@ class DecBlock(OptLM):
         self.task = None
         self.init_all_weights()
 
-        # self.h = RemoteSequential(config, dht=dht) # decentrial 
-        # self.dht = dht
-        print('DecBlock init blocks '+str(block_idx)+' done.......')
+        self.h = RemoteSequential(config, dht=dht) # decentrial 
+        self.dht = dht
 
     # ## connect for loop in dist_flex_opt & send receive
     # def generation_step(self):

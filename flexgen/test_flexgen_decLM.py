@@ -114,8 +114,8 @@ def main(args):
     #                   2, args.comm_device, num_inner_iterations=num_inner_iterations, dht=INITIAL_PEERS) # node 2
     # model = DecLM(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
     #                   num_blocks=2, comm_device=args.comm_device, num_inner_iterations=num_inner_iterations, dht=dht) # node 1
-    model = DecLM(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
-                      num_blocks=args.num_blocks,  dht=dht) # node 1
+    block = DecBlock(get_opt_config(args.model), env, args.path, policy, device_rank=args.rank,
+                      block_idx=args.block_idx,  dht=dht) # node 1
 
     cache_size = opt_config.cache_bytes(num_prompts, prompt_len + gen_len)
     hidden_size = opt_config.hidden_bytes(num_prompts, prompt_len + gen_len)
@@ -146,7 +146,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_parser_arguments(parser)
-    # add_distributed_parser_arguments(parser)
     args = parser.parse_args()
     
     args.world_size = 1
@@ -160,25 +159,10 @@ if __name__ == "__main__":
     args.comm_device = 'cpu' 
     args.sep_layer=False
     args.num_inner_iterations = 1
-    args.num_blocks=1
-    # args.use_mpi=True
-    # initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                         args.rank, args.local_rank, args.comm_device)
-    # num_gpus = torch.cuda.device_count()
-    # print('num_gpus ', num_gpus)
-    # if num_gpus>1 : 
-    #     if args.use_mpi:
-    #         args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE'))
-    #         args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK'))
-    #         args.local_rank = int(os.getenv('OMPI_COMM_WORLD_LOCAL_RANK'))
-    #     initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                             args.rank, args.local_rank, args.comm_device)
-    # else:
-    #     args.world_size = 1
-    #     args.rank = 0
-    #     args.local_rank = 0
-    #     initialize_distributed(args.head_ip, args.port, args.world_size,
-    #                            args.rank, args.local_rank, args.comm_device)
+    # args.block_idx=[0,1,2,3,4,5,6,7,8,9,10,11] #total 12 transformer layers, one input layer, one output layer
+    args.block_idx=[0,1,2,3,4,5,] #total 12 transformer layers, one input layer, one output layer
+    # args.block_idx=[6,7,8,9,10,11] #total 12 transformer layers, one input layer, one output layer
+
     assert len(args.percent) == 6
     
     try:
