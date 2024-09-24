@@ -101,6 +101,9 @@ class _ServerInferenceSession:
         hypo_ids: torch.LongTensor,
         *,
         step_id: str,
+        flexconfig:  Union[str, OptConfig],
+        env: ExecutionEnv,
+        policy: Policy,
     ) -> torch.Tensor:
         """
         Inference step: send a chunk of input tensors and receive a chunk of outputs
@@ -168,7 +171,7 @@ class _ServerInferenceSession:
         ), f"output activation shape is different from input shape: {outputs[0].shape} != {inputs.shape}"
 
         self._position += n_input_tokens
-
+        print('server inference session self._position ', self._position)
         return outputs[0]
 
     def _collect_next_servers(self) -> List[Tuple[str, str, int, int]]:
@@ -239,15 +242,15 @@ class InferenceSession:
     def position(self) -> int:
         return self._position
 
-    @position.setter
-    def position(self, start_from_position: int) -> None:
-        self._position = start_from_position
+    @position.setter 
+    def position(self, start_from_position: int) -> None: # 这段代码的作用是设置一个位置属性，并确保所有相关的会话对象都同步更新这个位置。
+        self._position = start_from_position # set a position attribute and ensure that all related session objects are updated to reflect this position synchronously.
         for session in self._server_sessions:
             assert isinstance(session, _ServerInferenceSession)
             session.position = start_from_position
 
     def _enter_server_sessions(self, chosen_spans: List[RemoteSpanInfo]) -> List[_ServerInferenceSession]:
-        server_sessions = []
+        server_sessions = [] # 创建一组服务器会话，并在发生错误时确保已创建的会话能够正确退出。
         try:
             for span in chosen_spans:
                 span_uids = CHAIN_DELIMITER.join(self._sequence_manager.block_uids[span.start : span.end])
@@ -281,12 +284,16 @@ class InferenceSession:
         assert not self._closed and not self._server_sessions
         return self
 
-    def step(
+    def step(   # 执行一次推理步骤，处理输入数据和相应的提示与假设 ID，同时在可能出现错误的情况下进行重试。
         self,
         inputs: torch.Tensor,
+        flexconfig: flexconfig,
+        env: env,
+        policy: policy,
         prompts: Optional[torch.Tensor] = None,
         hypo_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        
         assert not self._closed
         if torch.is_grad_enabled():
             logger.warning("Running inference session with grad enabled. Gradients will *not* be propagated correctly.")
@@ -311,7 +318,7 @@ class InferenceSession:
         inputs = inputs.cpu()
         prompts = prompts.cpu()
         hypo_ids = hypo_ids.cpu()
-        step_id = str(uuid.uuid4())
+        step_id = str(uuid.uuid4()) #生成一个唯一的步骤 ID。
 
         n_input_tokens = inputs.shape[1]
         if self._position + n_input_tokens > self._max_length:
@@ -331,11 +338,14 @@ class InferenceSession:
 
                     server_session = self._server_sessions[server_idx]
                     assert server_session.position == self.position, f"{server_session.position} and {self.position}"
-                    inputs = server_session.step(
+                    inputs = server_session.step( # 调用服务器会话的 step 方法，处理输入、提示和假设 ID，并传入步骤 ID。
                         inputs,
                         prompts[server_session.span.start : server_session.span.end],
                         hypo_ids,
                         step_id=step_id,
+                        flexconfig=flexconfig,
+                        env=env,
+                        policy=policy,
                     )
 
                     server_idx += 1
@@ -353,21 +363,23 @@ class InferenceSession:
                         f"Caught exception when running inference via {server_session.span if server_session is not None else None} "
                         f"(retry in {delay:.0f} sec): {repr(e)}"
                     )
-                    maybe_log_traceback(e)
-                    time.sleep(delay)
+                    maybe_log_traceback(e) # 可能记录异常的回溯信息。 
+                    time.sleep(delay) #等待重试延迟时间后重试
 
-        self._position += n_input_tokens
-        outputs = inputs[:, -n_input_tokens:]
-        outputs = outputs.to(device=inputs_device, dtype=inputs_dtype)
+        self._position += n_input_tokens # 更新当前的位置
+        outputs = inputs[:, -n_input_tokens:] # 从输入中提取最后的 n_input_tokens 作为输出。
+        outputs = outputs.to(device=inputs_device, dtype=inputs_dtype) 
+        print('client inference session outputs ', outputs)
         return outputs
 
+    # 处理服务器会话的更新，确保在服务器故障的情况下能够重新生成必要的序列，并维护会话之间的链接，以支持高效的远程通信。
     def _update_sequence(self, server_idx: int, block_idx: int, attempt_no: int) -> int:
         # If there is a failed server session, this code closes it
         self._exit_server_sessions(self._server_sessions[server_idx : server_idx + 1])
 
         n_prev_spans = len(self._server_sessions)
         update_end = self._server_sessions[server_idx].span.end if server_idx < n_prev_spans else self.num_blocks
-        if attempt_no >= 1:
+        if attempt_no >= 1: #如果尝试次数大于等于 1，记录调试信息，说明由于服务器故障，从 block_idx 到 update_end 的远程注意缓存将被重新生成
             logger.debug(
                 f"Due to a server failure, remote attention caches "
                 f"from block {block_idx} to {update_end} will be regenerated"
@@ -375,12 +387,14 @@ class InferenceSession:
 
         updated_spans = self._sequence_manager.make_sequence(
             block_idx, update_end, mode="min_latency", cache_tokens_needed=self._max_length
-        )
+        )# 调用 _sequence_manager 的 make_sequence 方法，生成新的序列，参数包括当前块索引、更新结束位置、模式（最小延迟）和所需的缓存令牌数量。
+
         # make_sequence() could return a longer sequence
         updated_spans[-1].end = min(updated_spans[-1].end, update_end)
         updated_sessions = self._enter_server_sessions(updated_spans)
         logger.debug(f"Found path from block {block_idx} to {update_end} via {len(updated_spans)} servers")
-
+        # 记录调试信息，显示从 block_idx 到 update_end 的路径通过了多少个服务器。
+        
         # If there is a failed span, this code replaces it, otherwise it just adds new ones
         if server_idx < n_prev_spans:
             updated_sessions[0].history = self._server_sessions[server_idx].history
