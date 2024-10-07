@@ -7,72 +7,42 @@ import logging
 import random
 import threading
 import time
-from typing import Any, Collection, Dict, List, Optional, Sequence, Union
+import warnings
+from typing import Any, Dict, List, Optional, Sequence, Set, Union
 from weakref import WeakMethod
-
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import Optional, Union
-
-from flexgen.config import ClientConfig
-from flexgen.handler import TransformerConnectionHandler
-# from flexgen.utils.ping import PingAggregator
-from flexgen.share_utils.ping import PingAggregator
-from flexgen.share_utils.sequence_info import RemoteSequenceInfo
-
-#from config import ClientConfig
-#from handler import TransformerConnectionHandler
 
 import dijkstar
 import numpy as np
-from torch import nn
 from hivemind import DHT, P2P, MSGPackSerializer, PeerID
 from hivemind.dht.node import Blacklist
 from hivemind.moe.client.remote_expert_worker import RemoteExpertWorker
 from hivemind.proto import runtime_pb2
 from hivemind.utils.logging import get_logger
 
+from petals.client.config import ClientConfig
+from petals.client.routing.sequence_info import RemoteSequenceInfo
+from petals.client.routing.spending_policy import NoSpendingPolicy
+from petals.data_structures import ModuleUID, RemoteSpanInfo, ServerState
+from petals.server.handler import TransformerConnectionHandler
+from petals.utils.dht import get_remote_module_infos
+from petals.utils.ping import PingAggregator
+from petals.utils.random import sample_up_to
+
 logger = get_logger(__name__)
 
-ModuleUID = str
-UID_DELIMITER = "."  # delimits parts of one module uid, e.g. "bloom.transformer.h.4.self_attention"
-CHAIN_DELIMITER = " "  # delimits multiple uids in a sequence, e.g. "bloom.layer3 bloom.layer4"
 
-# PUBLIC_INITIAL_PEERS = [
-#     # IPv4 DNS addresses
-#     "ec2-54-153-80-127.us-west-1.compute.amazonaws.com",
-#     "ec2-54-193-136-27.us-west-1.compute.amazonaws.com",
-#     # Reserved IPs
-#     "/ip4/54.193.136.27/",
-#     "/ip4/54.153.80.127/"]
-
-PUBLIC_INITIAL_PEERS = ["/ip4/172.31.26.141/tcp/32977/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS", 
-                        "/ip4/172.31.26.141/udp/54124/quic/p2p/12D3KooWFRwayM6VrNFwAhyA4MGbxsZW6yvQgmVCxwRVkxrSRsgS"]
+class SequenceManagerConfig(ClientConfig):
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "petals.client.routing.SequenceManagerConfig has been moved to petals.ClientConfig. "
+            "This alias will be removed in Petals 2.2.0+",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(*args, **kwargs)
 
 
 @dataclasses.dataclass
-class SequenceManagerConfig:
-    initial_peers: Sequence[str] = tuple(PUBLIC_INITIAL_PEERS)  # a list of initial peers for hivemind DHT
-    dht_prefix: Optional[str] = None  # a prefix for all dht keys that correspond to this model (default: model name)
-    daemon_startup_timeout: int = 60  # timeout for the libp2p daemon connecting to initial peers
-
-    show_route: Union[str, bool] = "inference"  # show chosen route through servers. one of [False, "inference", True]
-    allowed_servers: Optional[Collection[Union[PeerID, str]]] = None  # if defined, send requests only to these servers
-    use_server_to_server: bool = True  # Use direct server-to-server communication
-
-    connect_timeout: float = 5  # timeout for opening a connection
-    request_timeout: float = 3 * 60  # timeout for forward/backward/inference requests
-    update_period: float = 60  # refresh DHT information once in this many seconds
-
-    max_retries: Optional[int] = None  # max number retries before the client raises an exception (default: inf)
-    min_backoff: float = 1  # after a repeated failure, sleep for this many seconds times 2 ** (num_failures - 1)
-    max_backoff: float = 60  # limit maximal sleep time between retries to this value
-    ban_timeout: float = 15  # when a remote peer fails to respond, prevent routing to that peer for this many seconds
-    active_adapter: Optional[str] = None  # name of active LoRA adapter (usually, Hugging Face repo)
-
-    max_pinged: int = 5  # max servers to ping from each sequence side, per update
-    ping_timeout: float = 2  # max time to wait for pings, per update
-
 class SequenceManagerState:
     p2p: P2P = None
     sequence_info: Optional[RemoteSequenceInfo] = None
@@ -84,11 +54,23 @@ class SequenceManagerState:
 
     def __len__(self) -> int:
         return len(self.sequence_info)
-      
+
+
 class RemoteSequenceManager:
+    """
+    Sequence manager is a thread that keeps track of remote servers that hold the specified sequence of blocks.
+    TL;DR it tells you, which peers you should ask to get a specific layer. It is used in RemoteSequential.
+    When created, RemoteSequenceManager looks up which servers serve necessary layers by reading from DHT.
+    Using this information, sequence manager can form sequences of servers that collectively have the full sequence.
+    To form such a sequence, call .make_sequence with the appropriate optimization policy (see make_sequence docstr).
+
+    :note: RemoteSequenceManager takes up some CPU and network I/O to operate in background. It is recommended to avoid
+      running redundant sequence managers for the same set of layers.
+    """
+
     def __init__(
         self,
-        config: SequenceManagerConfig,
+        config: ClientConfig,
         block_uids: Sequence[ModuleUID],
         *,
         dht: Optional[DHT] = None,
@@ -111,8 +93,6 @@ class RemoteSequenceManager:
                 startup_timeout=config.daemon_startup_timeout,
                 start=True,
             )
-        print('client manager dht', dht)
-        print('DHT ', DHT)
         assert isinstance(dht, DHT) and dht.is_alive(), "`dht` must be a running hivemind.DHT instance"
         self.dht = dht
 
@@ -122,7 +102,10 @@ class RemoteSequenceManager:
         self.lock_changes = threading.Lock()
         self._thread = _SequenceManagerUpdateThread(config.update_period, WeakMethod(self._update))
         self._thread_start_lock = threading.Lock()
-        # self.policy = NoSpendingPolicy()
+        self.policy = NoSpendingPolicy()
+
+        self.allowed_servers = self._peer_ids_to_set(config.allowed_servers)
+        self.blocked_servers = self._peer_ids_to_set(config.blocked_servers)
 
         self.ping_aggregator = PingAggregator(dht)
 
@@ -134,7 +117,23 @@ class RemoteSequenceManager:
         if state.sequence_info.last_updated_time is not None:
             assert block_uids == state.sequence_info.block_uids
             self._thread.ready.set()  # no need to await the first dht fetch
-            self._need_latest_infos = True
+
+    @staticmethod
+    def _peer_ids_to_set(peer_ids: Optional[Sequence[Union[PeerID, str]]]) -> Optional[Set[PeerID]]:
+        if peer_ids is None:
+            return None
+
+        result = set()
+        for peer_id in peer_ids:
+            if isinstance(peer_id, PeerID):
+                result.add(peer_id)
+            elif isinstance(peer_id, str):
+                result.add(PeerID.from_base58(peer_id))
+            else:
+                raise TypeError(
+                    f"`allowed_servers` and `blocked_servers` have to contain only PeerIDs or strings, but got {type(peer_id)}"
+                )
+        return result
 
     def make_sequence(
         self,
@@ -175,6 +174,155 @@ class RemoteSequenceManager:
             logger.info(f"Route found: {route_repr}")
         return span_sequence
 
+    def _make_sequence_with_min_latency(
+        self, start_index: int, end_index: int, *, cache_tokens_needed: Optional[int]
+    ) -> List[RemoteSpanInfo]:
+        if start_index == end_index:
+            return []
+
+        with self.lock_changes:
+            missing_blocks = [
+                block_idx
+                for block_idx in range(start_index, end_index)
+                if not self.state.sequence_info.spans_containing_block[block_idx]
+            ]
+            if missing_blocks:
+                raise MissingBlocksError(missing_blocks)
+            server_infos = {
+                span.peer_id: span.server_info
+                for block_idx in range(start_index, end_index)
+                for span in self.state.sequence_info.spans_containing_block[block_idx]
+            }
+
+            graph = self._build_inference_graph(start_index, end_index, cache_tokens_needed=cache_tokens_needed)
+
+        path = dijkstar.find_path(graph, "start", "end")
+        logger.debug(f"Path info: {path}")
+        if start_index == 0 and end_index == len(self):
+            logger.debug(f"Expected speed: {1 / path.total_cost:.1f} steps/sec")
+
+        span_sequence = []
+        for peer_id, block_idx in path.nodes[1:-1]:
+            if not span_sequence or span_sequence[-1].peer_id != peer_id:
+                span_sequence.append(RemoteSpanInfo(peer_id, block_idx, block_idx, server_infos[peer_id]))
+            else:
+                span_sequence[-1].end = block_idx
+
+        # Remove empty spans that can appear if we don't force to go to the end of each server and network delay
+        # don't follow triangle inequality (delay(A, B) + delay(B, C) < delay(A, C)) due to measurement errors
+        span_sequence = [span for span in span_sequence if span.length > 0]
+
+        return span_sequence
+
+    def _build_inference_graph(
+        self,
+        start_index: int,
+        end_index: int,
+        *,
+        cache_tokens_needed: Optional[int],
+        overhead_delay: float = 0.018,  # Serialization overhead (empirically measured)
+        default_inference_rps: float = 300,  # If inference RPS unknown
+        alloc_delay: float = 10,  # If not enough cache left, we penalize the edge
+    ) -> dijkstar.Graph:
+        missing_blocks = [
+            block_idx
+            for block_idx in range(start_index, end_index)
+            if not self.state.sequence_info.spans_containing_block[block_idx]
+        ]
+        if missing_blocks:
+            raise MissingBlocksError(missing_blocks)
+
+        client_server_rtts = self.ping_aggregator.to_dict()
+
+        graph = dijkstar.Graph()
+
+        # Clent -> server network delays
+        for span in self.state.sequence_info.spans_containing_block[start_index]:
+            delay = self._rtt_to_delay(client_server_rtts.get(span.peer_id))
+            delay += overhead_delay
+            if not self._has_cache_for(span, cache_tokens_needed):
+                delay += alloc_delay
+            graph.add_edge("start", (span.peer_id, start_index), delay)
+
+        # Server -> client network delays
+        for span in self.state.sequence_info.spans_containing_block[end_index - 1]:
+            delay = self._rtt_to_delay(client_server_rtts.get(span.peer_id))
+            graph.add_edge((span.peer_id, end_index), "end", delay)
+
+        # Server -> server network delays
+        for block_idx in range(start_index + 1, end_index):
+            for cur_span in self.state.sequence_info.spans_containing_block[block_idx - 1]:
+                if cur_span.end != block_idx:
+                    # If we choose a server, we force to go to the end of it before switching to a new one
+                    # to avoid O(N^2) graphs for N servers
+                    continue
+
+                for next_span in self.state.sequence_info.spans_containing_block[block_idx]:
+                    rtt = None
+                    if cur_span.server_info.next_pings is not None:
+                        rtt = cur_span.server_info.next_pings.get(next_span.peer_id.to_base58())
+                    delay = self._rtt_to_delay(rtt)
+                    delay += overhead_delay
+                    if not self._has_cache_for(next_span, cache_tokens_needed):
+                        delay += alloc_delay
+                    graph.add_edge((cur_span.peer_id, block_idx), (next_span.peer_id, block_idx), delay)
+
+        # Compute delays
+        for span in self.state.sequence_info.spans_by_priority:
+            for block_idx in range(max(span.start, start_index), min(span.end, end_index)):
+                inference_rps = span.server_info.inference_rps
+                if inference_rps is None:
+                    inference_rps = default_inference_rps
+                graph.add_edge((span.peer_id, block_idx), (span.peer_id, block_idx + 1), 1.0 / inference_rps)
+
+        return graph
+
+    @staticmethod
+    def _rtt_to_delay(
+        rtt: float,
+        *,
+        default_delay: float = 0.15,  # If network delay unknown
+        max_delay: float = 5,  # If unreachable, we don't want to discard the edge completely
+    ) -> float:
+        if rtt is None:
+            return default_delay
+        return min(rtt / 2, max_delay)
+
+    @staticmethod
+    def _has_cache_for(span: RemoteSpanInfo, cache_tokens_needed: Optional[int] = None) -> bool:
+        if cache_tokens_needed is None or span.server_info.cache_tokens_left is None:
+            return True
+
+        # Here, `span` contains all blocks hosted by a server - but we won't necessarily run all of them through
+        # this particular server in our path. It is difficult to estimate how many blocks we'll use at this stage,
+        # so we assume that we'll use all of them (the worst case for the cache size) and get a pessimistic estimate.
+        # This is okay since false positives are more costly than false negatives here.
+        return cache_tokens_needed * 2 * span.length <= span.server_info.cache_tokens_left
+
+    def _make_sequence_with_max_throughput(self, start_index: int, end_index: int) -> List[RemoteSpanInfo]:
+        client_server_rtts = self.ping_aggregator.to_dict()
+
+        span_sequence = []
+        current_index = start_index
+        while current_index < end_index:
+            candidate_spans = self.state.sequence_info.spans_containing_block[current_index]
+            if not candidate_spans:
+                raise MissingBlocksError(current_index)
+
+            # We choose longer servers to minimize the number of hops but leave some randomization
+            # to distribute the load. We also exclude servers known to be unreachable.
+            eps = 1e-6
+            span_weights = np.array(
+                [span.length if client_server_rtts.get(span.peer_id) != np.inf else eps for span in candidate_spans],
+                dtype=np.float64,
+            )
+            chosen_span = np.random.choice(candidate_spans, p=span_weights / span_weights.sum())
+
+            assert chosen_span.start <= current_index < chosen_span.end
+            span_sequence.append(dataclasses.replace(chosen_span, start=current_index))
+            current_index = chosen_span.end
+        return span_sequence
+
     def __getitem__(self, ix: Union[int, slice]) -> RemoteSequenceManager:
         """Get a RemoteSequenceManager for a sub-sequence of blocks"""
         assert isinstance(ix, (int, slice))
@@ -192,21 +340,18 @@ class RemoteSequenceManager:
     def _update(self):
         """Perform an immediate and synchronous refresh, may take time"""
 
-        new_block_infos = petals.dht_utils.get_remote_module_infos(
+        new_block_infos = get_remote_module_infos(
             self.dht, self.block_uids, active_adapter=self.config.active_adapter, latest=True
         )
 
         for block_info in new_block_infos:
-            if not block_info:
-                continue
-
-            # Apply whitelist, if defined
-            if self.config.allowed_servers is not None:
-                block_info.servers = {
-                    peer_id: server_info
-                    for peer_id, server_info in block_info.servers.items()
-                    if peer_id in self.config.allowed_servers or str(peer_id) in self.config.allowed_servers
-                }
+            # Apply allow and block lists
+            block_info.servers = {
+                peer_id: server_info
+                for peer_id, server_info in block_info.servers.items()
+                if (self.allowed_servers is None or peer_id in self.allowed_servers)
+                and (self.blocked_servers is None or peer_id not in self.blocked_servers)
+            }
 
             # Remove temporarily banned peers, unless there are no peers left
             valid_servers = {
@@ -220,7 +365,6 @@ class RemoteSequenceManager:
                         f"Kept {len(valid_servers)} out of {len(block_info.servers)} servers holding {block_info.uid}"
                     )
                     block_info.servers = valid_servers
-
                 else:
                     # If we blacklisted all servers, the error may actually be client-caused
                     logger.debug(f"All servers holding {block_info.uid} are blacklisted, ignoring blacklist")
@@ -229,9 +373,13 @@ class RemoteSequenceManager:
             self.state.sequence_info.update_(new_block_infos)
 
             first_servers = [span.peer_id for span in self.state.sequence_info.spans_containing_block[0]]
+            middle_servers = [
+                span.peer_id for spans in self.state.sequence_info.spans_containing_block[1:-1] for span in spans
+            ]
             last_servers = [span.peer_id for span in self.state.sequence_info.spans_containing_block[-1]]
 
         pinged_servers = set(sample_up_to(first_servers, self.config.max_pinged))
+        pinged_servers = set(sample_up_to(middle_servers, self.config.max_pinged))
         pinged_servers |= set(sample_up_to(last_servers, self.config.max_pinged))
         self.ping_aggregator.ping(list(pinged_servers), wait_timeout=self.config.ping_timeout)
 
@@ -322,113 +470,25 @@ class RemoteSequenceManager:
             return 0
         return min(self.config.min_backoff * 2 ** (attempt_no - 1), self.config.max_backoff)
 
-
-    def get_request_metadata(self, protocol: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
+    def get_request_metadata(
+        self, protocol: str, args_structure: Any = None, *args, **kwargs
+    ) -> Optional[Dict[str, Any]]:
         """
         :param protocol: one of "rpc_forward", "rpc_backward" or "rpc_inference"
+        :param args_structure: the structure of flattened tensors from pack_args_kwargs in petals.utils.packaging
         :param args: request-specific inputs, typically block uids and input tensors
         :param kwargs: additional request context, such as remote peer ID
         :returns: msgpack-serialized metadata dict that will be passed alongside a given request
         """
-        # return dict(points=self.policy.get_points(protocol, *args, **kwargs), active_adapter=self.config.active_adapter)
-        return dict(0.0, active_adapter=self.config.active_adapter)
+        return dict(
+            points=self.policy.get_points(protocol, *args, **kwargs),
+            active_adapter=self.config.active_adapter,
+            args_structure=args_structure,
+        )
 
     def shutdown(self):
         self._thread.shutdown()
 
-
-class RemoteSequential(nn.Module):
-    """
-    A sequence of transformer blocks hosted by the swarm.
-    """
-
-    def __init__(
-        self,
-        config: ClientConfig,
-        *,
-        sequence_manager: Optional[RemoteSequenceManager] = None,
-        dht: Optional[DHT] = None,
-        start_block: Optional[int] = None,
-        end_block: Optional[int] = None,
-        **kwargs,
-    ):
-        super().__init__()
-        self.config = config
-
-        assert sequence_manager is None or (
-            dht is None and start_block is None and end_block is None
-        ), "`dht`, `start_block`, and `end_block` have no effect when you provide a custom `sequence_manager`"
-        if sequence_manager is None:
-            if start_block is None:
-                start_block = 0
-            if end_block is None:
-                end_block = self.config.num_hidden_layers
-            block_uids = tuple(f"{config.dht_prefix}{UID_DELIMITER}{i}" for i in range(start_block, end_block))
-            sequence_manager = RemoteSequenceManager(config, block_uids, dht=dht, **kwargs)
-        self.sequence_manager = sequence_manager
-
-        self._active_session = ContextVar("active_session", default=None)
-
-    def forward(self, inputs: torch.Tensor, prompts: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
-        assert inputs.ndim == 3, "inputs must be a tensor of shape [batch_size, seq_length, hidden_size]"
-        if self.active_session is None:
-            assert all(v is None for v in kwargs.values()), f"Extra kwargs are not supported in forward: {kwargs}"
-            return _RemoteSequentialAutogradFunction.apply(inputs, prompts, self.sequence_manager)
-        else:
-            return self.active_session.step(inputs, prompts, **kwargs)
-
-    @property
-    def active_session(self) -> Optional[InferenceSession]:
-        """
-        If called inside `with model.inference_session(...):` or `with model.use_session(...):`,
-        returns an active InferenceSession. Otherwise, returns None.
-        """
-
-        return self._active_session.get()
-
-    @property
-    def position(self) -> int:
-        """Returns the prefix length (in tokens) in the active inference session or zero if no session is active."""
-
-        return self.active_session.position if self.active_session is not None else 0
-
-    @contextmanager
-    def use_session(self, session: Optional[InferenceSession]) -> InferenceSession:
-        """Inside this context, forward() will use an _existing_ InferenceSession provided as the argument."""
-
-        token = self._active_session.set(session)
-        try:
-            yield session
-        finally:
-            self._active_session.reset(token)
-
-    @contextmanager
-    def inference_session(self, **kwargs) -> InferenceSession:
-        """
-        Inside this context, forward() will use a _new_ InferenceSession created with given parameters.
-
-        :param max_length: Maximal expected length of inference results. Servers use this parameter
-                           to calculate the size of attention caches allocated to this client.
-        """
-
-        with InferenceSession(self.sequence_manager, **kwargs) as session, self.use_session(session):
-            yield session
-
-    def __getitem__(self, ix: Union[int, slice]) -> RemoteSequential:
-        return RemoteSequential(
-            self.config,
-            sequence_manager=self.sequence_manager[ix],
-        )
-
-    def __iter__(self):
-        for block_index in range(len(self)):
-            yield self[block_index]
-
-    def __len__(self):
-        return len(self.sequence_manager)
-
-    def extra_repr(self) -> str:
-        return f"modules={self.sequence_manager.block_uids[0]}..{self.sequence_manager.block_uids[-1]}"
 
 class _SequenceManagerUpdateThread(threading.Thread):
     def __init__(self, update_period: float, ref_update_manager: WeakMethod):
@@ -467,3 +527,17 @@ class _SequenceManagerUpdateThread(threading.Thread):
     def __del__(self):
         self.shutdown()
 
+
+def maybe_log_traceback(exc: Exception):
+    traceback_level = logging.DEBUG if str(exc) or isinstance(exc, asyncio.TimeoutError) else logging.WARNING
+    logger.log(traceback_level, "See detailed traceback below:", exc_info=True)
+
+
+class MissingBlocksError(RuntimeError):
+    def __init__(self, block_indices: Union[int, Sequence[int]]):
+        super().__init__(
+            f"No servers holding blocks {block_indices} are online. "
+            f"You can check the public swarm's state at https://health.petals.dev "
+            f"If there are not enough servers, please connect your GPU: "
+            f"https://github.com/bigscience-workshop/petals#connect-your-gpu-and-increase-petals-capacity "
+        )

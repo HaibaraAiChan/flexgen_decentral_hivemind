@@ -9,9 +9,11 @@ import torch
 from hivemind.utils.logging import get_logger
 from transformers import AutoTokenizer
 
-from petals import AutoDistributedModelForCausalLM
-from petals.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
-
+# from petals import AutoDistributedModelForCausalLM
+# from petals.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
+# from flexgen import AutoDistributedModelForCausalLM
+from flexgen.utils.auto_config import AutoDistributedModelForCausalLM
+from flexgen.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
 logger = get_logger()
 
 

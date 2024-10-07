@@ -1,19 +1,21 @@
 import os
-import re
 from dataclasses import dataclass
 from typing import Optional, Type, Union
 
+from hivemind import get_logger
 from transformers import AutoConfig, PretrainedConfig, PreTrainedModel
 
-def always_needs_auth(model_name: Union[str, os.PathLike, None]) -> bool:
-    loading_from_repo = model_name is not None and not os.path.isdir(model_name)
-    return loading_from_repo and model_name.startswith("meta-llama/Llama-2-")
+from petals.utils.hf_auth import always_needs_auth
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class _ModelClasses:
     config: Type[PretrainedConfig]
     model: Optional[Type[PreTrainedModel]] = None
     model_for_causal_lm: Optional[Type[PreTrainedModel]] = None
+    model_for_speculative: Optional[Type[PreTrainedModel]] = None
     model_for_sequence_classification: Optional[Type[PreTrainedModel]] = None
 
 
@@ -49,21 +51,6 @@ class _AutoDistributedBase:
 
         return proper_cls.from_pretrained(model_name_or_path, *args, **kwargs)
 
-
-# class AutoDistributedConfig(_AutoDistributedBase):
-#     _mapping_field = "config"
-
-
-# class AutoDistributedModel(_AutoDistributedBase):
-#     _mapping_field = "model"
-
-
-# class AutoDistributedModelForCausalLM(_AutoDistributedBase):
-#     _mapping_field = "model_for_causal_lm"
-
-
-# class AutoDistributedModelForSequenceClassification(_AutoDistributedBase):
-#     _mapping_field = "model_for_sequence_classification"
 
 class DefaultRevisionMixin:
     """
@@ -102,6 +89,10 @@ class AutoDistributedModel(DefaultRevisionMixin, _AutoDistributedBase):
 
 class AutoDistributedModelForCausalLM(DefaultRevisionMixin, _AutoDistributedBase):
     _mapping_field = "model_for_causal_lm"
+
+
+class AutoDistributedSpeculativeModel(DefaultRevisionMixin, _AutoDistributedBase):
+    _mapping_field = "model_for_speculative"
 
 
 class AutoDistributedModelForSequenceClassification(DefaultRevisionMixin, _AutoDistributedBase):
